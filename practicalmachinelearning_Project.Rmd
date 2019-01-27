@@ -1,0 +1,161 @@
+---
+title: "Practical Machine Learning"
+author: "Bastian Huntgeburth"
+date: "27 Januar 2019"
+output: html_document
+---
+
+#Coursera "Practical Machine Learning project using the Weight Lifting Exercises Dataset
+
+##Executive Summary
+Using a dataset, provided by HAR http://groupware.les.inf.puc-rio.br/har , we will train several models to predict different exercises that were recorded by an activity tracker.
+
+For that, several tasks were done:  
+- Loading and cleaning the data  
+- Split the data in a training and a testing set  
+- Training several models using the caret package  
+- Choosing a model to predict the outcome for the final quiz  
+
+## Loading an Cleaning the data
+
+After loading some library's, I load the given data for model training and the data for prediction.
+
+```{r}
+library(caret)  # package for Classification and Regression Training
+library(rattle) # package for a fancy visualisation of a decision tree
+library(doSNOW) # package for ditribute the compute load for model-training over several CPU cores
+
+# loading the data an define strings that are interpreted as NA's
+dataset <- read.csv(file="D:/Coursera/RWorkingDirectory/pml-training.csv", na.strings=c("NA","#DIV/0!",""), row.names = "X")
+prediction_data <- read.csv(file="D:/Coursera/RWorkingDirectory/pml-testing.csv", na.strings=c("NA","#DIV/0!",""), row.names = "X")
+```
+
+Now we take a look at the data quality. We calculate the percentage of NAs per column and show the result in a histogram.
+
+```{r}
+# create a vector to save the perentage of NAs of a column
+col_na_p<-c(rep(0,dim(dataset)[[2]]))
+
+# calculate the percentage of NAs of a column 
+for(i in 1:dim(dataset)[[2]]){
+        col_na_p[i]<-sum(is.na(dataset[,i]))/dim(dataset)[[1]]
+}
+
+# create a hostogram of the percentage of the NAs per column
+hist(col_na_p, labels = T, main= "Histogram of NA-percentage", ylim = c(0,120), xlab = "NA percentage", breaks = 100)
+
+# remove columns where NA-percentage is above 50%
+dataset<-dataset[,col_na_p<0.5]
+```
+
+We can see, that there are 100 features which have a NA-percentage of near 100%. Although we have 59 features where the NA percentage is zero (actually this includes the class-feature which is our training label).
+We assume that the information of the feature, with a high NA-percentage, is really low.  
+
+As a result we remove all features with a NA-percentage above 50%.  
+
+In a next step we check if there are features with near-zero variance. These features will not have any knowledge that can be used in a prediction model.  
+
+
+```{r}
+nzv<-nearZeroVar(dataset,saveMetrics=TRUE)     # calculate the variance of each feature 
+sum_nzv<-sum(nzv$nzv)    # sum up the number of feature with near zero variance
+sum_nzv
+dataset<-dataset[,nzv$nzv==F]   # remove the features with near zero variance from the dataset
+
+```
+We have `r sum_nzv` feature with near zero variance, which was also removed from the dataset.
+
+
+## Spliting the dataset and training models
+
+Now we split the dataset in a labeled training and testing set. The 60%/40% split should be appropriate for a medium sized dataset.
+
+```{r}
+set.seed(12345)         # set seed for reproducibility 
+inTrain <- createDataPartition(dataset$classe, p=0.6, list=FALSE)      # split the dataset in train- and testing data
+myTraining <- dataset[inTrain, ]      
+myTesting <- dataset[-inTrain, ]
+dim_train<-dim(myTraining)
+dim_test<-dim(myTesting)
+```
+Now we have `r dim_train[1]` observations in out training set and `r dim_test[1]` observations in our testset.  
+
+In the next steps we will build several model based on the training dataset. We will use a k-fold cross-validation, with k=10, which would be a good balance between smaller bias and higher variance.   
+
+First we will train a simple decision tree. We set the "tuneLenght" parameter to get several trees with different depths to choose the tree with the highest accuracy.  
+
+```{r}
+set.seed(112233)
+
+# create doSNOW Cluster
+cl<-makeCluster(16, type = "SOCK")
+registerDoSNOW(cl)
+
+# Train a simple decision tree
+train_control_rpart<-trainControl(method="cv", number=10)
+fit_rpart <- train(classe ~ ., method="rpart2", data=myTraining, trControl=train_control_rpart, tuneLength = 10)
+fit_rpart                               # print the model details
+fancyRpartPlot(fit_rpart$finalModel)    # print the decision tree
+
+```
+
+Let's create a confusion matrix with the remaining testing dataset.
+```{r}
+prediction_rpart <- predict(fit_rpart, myTesting)       # predict the outcome of the testing dataset
+cmrf_rpart <- confusionMatrix(prediction_rpart, myTesting$classe)       # create the confusion matrix
+cmrf_rpart
+```
+
+We see that the accuracy of our first model is 90%.
+
+Next we train a random forest model.
+
+```{r}
+# Train the random forest 
+train_control_rf <- trainControl(method="cv", number=10)
+fit_rf <- train(classe ~ ., method="rf", data=myTraining, trControl=train_control_rf)
+fit_rf          # print the model details
+```
+
+Let's create a confusion matrix for this model with the remaining testing dataset.  
+```{r}
+prediction_rf <- predict(fit_rf, myTesting)              # predict the outcome of the testing dataset
+cmrf_rf <- confusionMatrix(prediction_rf, myTesting$classe)     # create the confusion matrix
+cmrf_rf
+```
+We see that the accuracy of our random forest model is 99.9%.  
+
+Next we train a gradient  boosting model.
+```{r}
+# Train a gradient boosting model
+train_control_gbm <- trainControl(method = "cv", number = 10)
+fit_gbm <- train(classe ~ ., data=myTraining, method = "gbm", trControl = train_control_gbm, verbose = FALSE)
+fit_gbm                         # print the model details
+plot(fit_gbm, ylim=c(0.9, 1))   # plot the accuracy function
+
+stopCluster(cl)
+```
+We can see that a tree depth of 3 and a number of 150 trees produces the best accuracy.
+
+Let's create a confusion matrix for this model with the remaining testing dataset.
+```{r}
+prediction_gbm <- predict(fit_gbm, myTesting)             # predict the outcome of the testing dataset
+cmrf_gbm <- confusionMatrix(prediction_gbm, myTesting$classe)   # create the confusion matrix
+cmrf_gbm
+```
+We see that the accuracy of our gbm model is 99.6%.
+
+# Coosing a model
+
+Since the random forest model has the best accuracy I choose this model for predicting the outcome for quiz dataset. I expect a out of sample error 100%-99.9%=0.1%.
+
+# Prediction of the quiz data
+
+The random forest model predicts the following outcome for the quiz data.
+
+```{r}
+pred_fit_rf <- predict(fit_rf, prediction_data)
+pred_fit_rf
+
+
+```
